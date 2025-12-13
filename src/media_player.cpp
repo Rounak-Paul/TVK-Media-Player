@@ -39,6 +39,9 @@ MediaPlayer::MediaPlayer()
     , _prevWinY(0)
     , _prevWinW(1600)
     , _prevWinH(900)
+    , _showColorWindow(false)
+    , _showFiltersWindow(false)
+    , _showPostProcessWindow(false)
 {
 }
 
@@ -46,6 +49,9 @@ void MediaPlayer::OnStart() {
     TVK_LOG_INFO("Media Player started");
     _decoder = std::make_unique<VideoDecoder>();
     _thumbnailDecoder = std::make_unique<VideoDecoder>();
+    _audioDecoder = std::make_unique<AudioDecoder>();
+    _videoEffects = std::make_unique<VideoEffects>();
+    _videoEffects->Init(GetRenderer());
 }
 
 void MediaPlayer::OnUpdate() {
@@ -67,6 +73,11 @@ void MediaPlayer::OnUpdate() {
     if (_isPlaying && _hasVideo) {
         UpdateVideo();
     }
+    
+    // Update audio
+    if (_audioDecoder && _audioDecoder->HasAudio()) {
+        _audioDecoder->Update();
+    }
 }
 
 void MediaPlayer::OnUI() {
@@ -74,10 +85,24 @@ void MediaPlayer::OnUI() {
     DrawMenuBar();
     DrawControls();
     HandleWindowResizing();
+    
+    if (_showColorWindow) {
+        DrawColorAdjustmentsWindow();
+    }
+    if (_showFiltersWindow) {
+        DrawFiltersWindow();
+    }
+    if (_showPostProcessWindow) {
+        DrawPostProcessWindow();
+    }
 }
 
 void MediaPlayer::OnStop() {
     TVK_LOG_INFO("Media Player stopped");
+    
+    if (_videoEffects) {
+        _videoEffects->Cleanup();
+    }
     
     if (_videoTexture) {
         _videoTexture.reset();
@@ -94,11 +119,16 @@ void MediaPlayer::OnStop() {
     if (_thumbnailDecoder) {
         _thumbnailDecoder->Close();
     }
+    
+    if (_audioDecoder) {
+        _audioDecoder->Close();
+    }
 }
 
 void MediaPlayer::DrawMenuBar() {
-    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ImVec4(0.05f, 0.05f, 0.08f, 0.85f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.08f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ImVec4(0.01f, 0.02f, 0.03f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.01f, 0.02f, 0.03f, 0.85f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     
     if (ImGui::BeginMainMenuBar()) {
         HandleWindowDragging();
@@ -133,6 +163,17 @@ void MediaPlayer::DrawMenuBar() {
             ImGui::EndMenu();
         }
         
+        if (ImGui::BeginMenu("Video")) {
+            ImGui::MenuItem("Color Adjustments", nullptr, &_showColorWindow);
+            ImGui::MenuItem("Filters", nullptr, &_showFiltersWindow);
+            ImGui::MenuItem("Post Processing", nullptr, &_showPostProcessWindow);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Reset All Effects")) {
+                _videoEffects->ResetAll();
+            }
+            ImGui::EndMenu();
+        }
+        
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("About")) {
                 TVK_LOG_INFO("TVK Media Player v1.0.0");
@@ -145,6 +186,7 @@ void MediaPlayer::DrawMenuBar() {
         ImGui::EndMainMenuBar();
     }
     
+    ImGui::PopStyleVar(1);
     ImGui::PopStyleColor(2);
 }
 
@@ -235,9 +277,8 @@ void MediaPlayer::DrawControls() {
     
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.0f);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.08f, 0.85f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.08f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.01f, 0.02f, 0.03f, 0.85f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     
     ImGui::Begin("##Controls", nullptr, flags);
     
@@ -477,10 +518,13 @@ void MediaPlayer::DrawControls() {
         _volume = mx / volWidth;
         if (_volume < 0) _volume = 0;
         if (_volume > 1) _volume = 1;
+        if (_audioDecoder && _audioDecoder->HasAudio()) {
+            _audioDecoder->SetVolume(_volume);
+        }
     }
     
     ImGui::End();
-    ImGui::PopStyleColor(2);
+    ImGui::PopStyleColor(1);
     ImGui::PopStyleVar(3);
 }
 
@@ -500,6 +544,7 @@ void MediaPlayer::OpenFile() {
         
         if (_decoder->Open(filepath.value())) {
             _thumbnailDecoder->Open(filepath.value());
+            _audioDecoder->Open(filepath.value());
             
             _currentFilePath = filepath.value();
             _hasVideo = true;
@@ -515,6 +560,7 @@ void MediaPlayer::OpenFile() {
                 spec.height = _currentFrame.height;
                 spec.format = tvk::TextureFormat::RGBA8;
                 spec.generateMipmaps = false;
+                spec.storageUsage = true;
                 
                 _videoTexture = tvk::Texture::Create(
                     GetRenderer(),
@@ -543,10 +589,16 @@ void MediaPlayer::TogglePlayPause() {
     
     if (_isPlaying) {
         _videoStartTime = ElapsedTime() - _pausedAtTime;
+        if (_audioDecoder->HasAudio()) {
+            _audioDecoder->Play();
+        }
         TVK_LOG_INFO("Playback started");
     } else {
         _pausedAtTime = ElapsedTime() - _videoStartTime;
-        TVK_LOG_INFO("Playback paused at {:.2f}s", _pausedAtTime);
+        if (_audioDecoder->HasAudio()) {
+            _audioDecoder->Pause();
+        }
+        TVK_LOG_INFO("Playback paused at {}s", _pausedAtTime);
     }
 }
 
@@ -556,21 +608,25 @@ void MediaPlayer::UpdateVideo() {
     double currentPlaybackTime = ElapsedTime() - _videoStartTime;
     double frameDuration = 1.0 / _decoder->GetFPS();
     
-    // Check if we need to decode the next frame
     if (currentPlaybackTime >= _currentFrame.timestamp + frameDuration) {
         if (_decoder->DecodeNextFrame(_currentFrame)) {
-            // Update texture with new frame
             if (_videoTexture) {
                 _videoTexture->SetData(
                     _currentFrame.data.data(),
                     _currentFrame.width,
                     _currentFrame.height
                 );
+                
+                if (_videoEffects && _videoEffects->HasActiveEffects()) {
+                    _videoEffects->ProcessFrame(_videoTexture.get());
+                }
             }
         } else {
-            // End of video - loop back to start
             _isPlaying = false;
             _pausedAtTime = _decoder->GetDuration();
+            if (_audioDecoder->HasAudio()) {
+                _audioDecoder->Stop();
+            }
             TVK_LOG_INFO("Playback finished");
         }
     }
@@ -580,13 +636,10 @@ void MediaPlayer::SeekTo(double timeSeconds) {
     if (!_decoder || !_hasVideo) return;
     
     if (_decoder->Seek(timeSeconds)) {
-        _pausedAtTime = timeSeconds;
-        
-        if (_isPlaying) {
-            _videoStartTime = ElapsedTime() - _pausedAtTime;
+        if (_audioDecoder->HasAudio()) {
+            _audioDecoder->Seek(timeSeconds);
         }
         
-        // Decode frame at new position
         if (_decoder->DecodeNextFrame(_currentFrame)) {
             if (_videoTexture) {
                 _videoTexture->SetData(
@@ -597,7 +650,13 @@ void MediaPlayer::SeekTo(double timeSeconds) {
             }
         }
         
-        TVK_LOG_INFO("Seeked to {:.2f}s", timeSeconds);
+        _pausedAtTime = _currentFrame.timestamp;
+        
+        if (_isPlaying) {
+            _videoStartTime = ElapsedTime() - _currentFrame.timestamp;
+        }
+        
+        TVK_LOG_INFO("Seeked to {}s", timeSeconds);
     }
 }
 
@@ -825,6 +884,131 @@ void MediaPlayer::DrawWindowControls() {
     draw_icon_button("close_btn", ICON_FA_XMARK, close_hover_color, [&]() {
         Quit();
     });
+}
+
+void MediaPlayer::DrawColorAdjustmentsWindow() {
+    ImGui::SetNextWindowSize(ImVec2(320, 400), ImGuiCond_FirstUseEver);
+    
+    if (ImGui::Begin("Color Adjustments", &_showColorWindow)) {
+        ColorAdjustments& adj = _videoEffects->GetColorAdjustments();
+        
+        ImGui::Text("Basic");
+        ImGui::Separator();
+        
+        ImGui::SliderFloat("Brightness", &adj.brightness, -1.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Contrast", &adj.contrast, 0.0f, 3.0f, "%.2f");
+        ImGui::SliderFloat("Gamma", &adj.gamma, 0.1f, 3.0f, "%.2f");
+        ImGui::SliderFloat("Exposure", &adj.exposure, -3.0f, 3.0f, "%.2f");
+        
+        ImGui::Spacing();
+        ImGui::Text("Color");
+        ImGui::Separator();
+        
+        ImGui::SliderFloat("Hue Shift", &adj.hue, -0.5f, 0.5f, "%.2f");
+        ImGui::SliderFloat("Saturation", &adj.saturation, 0.0f, 3.0f, "%.2f");
+        ImGui::SliderFloat("Temperature", &adj.temperature, -1.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Tint", &adj.tint, -1.0f, 1.0f, "%.2f");
+        
+        ImGui::Spacing();
+        ImGui::Text("Tone");
+        ImGui::Separator();
+        
+        ImGui::SliderFloat("Shadows", &adj.shadows, -1.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Highlights", &adj.highlights, -1.0f, 1.0f, "%.2f");
+        
+        ImGui::Spacing();
+        if (ImGui::Button("Reset##Color", ImVec2(-1, 0))) {
+            adj.Reset();
+        }
+    }
+    ImGui::End();
+}
+
+void MediaPlayer::DrawFiltersWindow() {
+    ImGui::SetNextWindowSize(ImVec2(280, 300), ImGuiCond_FirstUseEver);
+    
+    if (ImGui::Begin("Filters", &_showFiltersWindow)) {
+        FilterSettings& flt = _videoEffects->GetFilterSettings();
+        
+        const char* filterNames[] = {
+            "None",
+            "Grayscale",
+            "Sepia",
+            "Invert",
+            "Posterize",
+            "Solarize",
+            "Threshold",
+            "Sharpen",
+            "Edge Detect"
+        };
+        
+        int currentFilter = static_cast<int>(flt.type);
+        if (ImGui::Combo("Filter", &currentFilter, filterNames, IM_ARRAYSIZE(filterNames))) {
+            flt.type = static_cast<FilterType>(currentFilter);
+        }
+        
+        ImGui::Spacing();
+        
+        if (flt.type == FilterType::Grayscale || flt.type == FilterType::Sepia || flt.type == FilterType::Invert) {
+            ImGui::SliderFloat("Strength", &flt.strength, 0.0f, 1.0f, "%.2f");
+        }
+        
+        if (flt.type == FilterType::Posterize) {
+            ImGui::SliderInt("Levels", &flt.levels, 2, 16);
+        }
+        
+        if (flt.type == FilterType::Solarize || flt.type == FilterType::Threshold) {
+            ImGui::SliderFloat("Threshold", &flt.threshold, 0.0f, 1.0f, "%.2f");
+        }
+        
+        ImGui::Spacing();
+        if (ImGui::Button("Reset##Filter", ImVec2(-1, 0))) {
+            flt.Reset();
+        }
+    }
+    ImGui::End();
+}
+
+void MediaPlayer::DrawPostProcessWindow() {
+    ImGui::SetNextWindowSize(ImVec2(300, 350), ImGuiCond_FirstUseEver);
+    
+    if (ImGui::Begin("Post Processing", &_showPostProcessWindow)) {
+        PostProcessSettings& pp = _videoEffects->GetPostProcess();
+        
+        ImGui::Text("Effects");
+        ImGui::Separator();
+        
+        ImGui::SliderFloat("Chromatic Aberration", &pp.chromaticAberration, 0.0f, 1.0f, "%.2f");
+        
+        ImGui::Spacing();
+        ImGui::Text("Vignette");
+        ImGui::Separator();
+        
+        ImGui::SliderFloat("Vignette", &pp.vignette, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Vignette Size", &pp.vignetteSize, 0.0f, 1.0f, "%.2f");
+        
+        ImGui::Spacing();
+        ImGui::Text("Film");
+        ImGui::Separator();
+        
+        ImGui::SliderFloat("Film Grain", &pp.filmGrain, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Scanlines", &pp.scanlines, 0.0f, 1.0f, "%.2f");
+        
+        ImGui::Spacing();
+        ImGui::Text("Vintage");
+        ImGui::Separator();
+        
+        ImGui::Checkbox("Enable Vintage", &pp.vintageEnabled);
+        if (pp.vintageEnabled) {
+            ImGui::SliderFloat("Vintage Strength", &pp.vintageStrength, 0.0f, 1.0f, "%.2f");
+        }
+        
+        ImGui::Spacing();
+        if (ImGui::Button("Reset##PostProcess", ImVec2(-1, 0))) {
+            pp.Reset();
+        }
+    }
+    ImGui::End();
 }
 
 } // namespace tvk_media

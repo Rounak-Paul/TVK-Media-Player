@@ -8,6 +8,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Add TinyVK library
 add_subdirectory(vendors/tinyvk)
 
+# Add OpenAL Soft
+set(ALSOFT_UTILS OFF CACHE BOOL "" FORCE)
+set(ALSOFT_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL_CONFIG OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL_HRTF_DATA OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL_AMBDEC_PRESETS OFF CACHE BOOL "" FORCE)
+add_subdirectory(vendors/openal-soft)
+
 # Find FFmpeg
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED 
@@ -15,22 +24,27 @@ pkg_check_modules(FFMPEG REQUIRED
     libavformat 
     libavutil 
     libswscale
+    libswresample
 )
 
 # Media Player executable
 add_executable(tvk-media-player
     src/main.cpp
     src/video_decoder.cpp
+    src/audio_decoder.cpp
+    src/video_effects.cpp
     src/media_player.cpp
 )
 
 target_include_directories(tvk-media-player PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendors/openal-soft/include
     ${FFMPEG_INCLUDE_DIRS}
 )
 
 target_link_libraries(tvk-media-player PRIVATE
     tinyvk
+    OpenAL
     ${FFMPEG_LIBRARIES}
 )
 

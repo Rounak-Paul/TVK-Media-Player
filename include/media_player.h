@@ -7,6 +7,8 @@
 
 #include <tinyvk/tinyvk.h>
 #include "video_decoder.h"
+#include "audio_decoder.h"
+#include "video_effects.h"
 #include <memory>
 #include <string>
 
@@ -35,6 +37,10 @@ private:
     void HandleWindowResizing();
     void DrawWindowControls();
     
+    void DrawColorAdjustmentsWindow();
+    void DrawFiltersWindow();
+    void DrawPostProcessWindow();
+    
     void OpenFile();
     void TogglePlayPause();
     void UpdateVideo();
@@ -45,6 +51,15 @@ private:
     std::unique_ptr<VideoDecoder> _thumbnailDecoder;
     VideoFrame _currentFrame;
     tvk::Ref<tvk::Texture> _videoTexture;
+    
+    // Audio decoding
+    std::unique_ptr<AudioDecoder> _audioDecoder;
+    
+    // Video effects (GPU-based)
+    std::unique_ptr<VideoEffects> _videoEffects;
+    bool _showColorWindow;
+    bool _showFiltersWindow;
+    bool _showPostProcessWindow;
     
     // Thumbnail preview
     VideoFrame _thumbnailFrame;

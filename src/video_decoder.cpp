@@ -199,8 +199,8 @@ bool VideoDecoder::Open(const std::string& filepath) {
 
     TVK_LOG_INFO("Video opened successfully:");
     TVK_LOG_INFO("  Resolution: {}x{}", _width, _height);
-    TVK_LOG_INFO("  FPS: {:.2f}", _fps);
-    TVK_LOG_INFO("  Duration: {:.2f} seconds", _duration);
+    TVK_LOG_INFO("  FPS: {}", _fps);
+    TVK_LOG_INFO("  Duration: {} seconds", _duration);
     TVK_LOG_INFO("  Decoder: {}", GetHWAccelName());
 
     return true;
