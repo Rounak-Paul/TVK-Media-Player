@@ -64,23 +64,28 @@ void MediaPlayer::OnUpdate() {
 }
 
 void MediaPlayer::OnUI() {
-    // Set up docking
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::DockSpaceOverViewport(0, viewport);
-
-    DrawMenuBar();
     DrawVideoView();
+    DrawMenuBar();
     DrawControls();
+    HandleWindowResizing();
 }
 
 void MediaPlayer::OnStop() {
     TVK_LOG_INFO("Media Player stopped");
+    
+    if (_videoTexture) {
+        _videoTexture.reset();
+    }
+    
     if (_decoder) {
         _decoder->Close();
     }
 }
 
 void MediaPlayer::DrawMenuBar() {
+    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ImVec4(0.1f, 0.1f, 0.1f, 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.5f));
+    
     if (ImGui::BeginMainMenuBar()) {
         HandleWindowDragging();
 
@@ -125,17 +130,35 @@ void MediaPlayer::DrawMenuBar() {
         
         ImGui::EndMainMenuBar();
     }
-
-    HandleWindowResizing();
+    
+    ImGui::PopStyleColor(2);
 }
 
 void MediaPlayer::DrawVideoView() {
-    ImGui::Begin("Video", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
     
-    ImVec2 windowSize = ImGui::GetContentRegionAvail();
+    ImGui::SetNextWindowPos(viewport->Pos);
+    ImGui::SetNextWindowSize(viewport->Size);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | 
+                             ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoResize |
+                             ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_NoBringToFrontOnFocus |
+                             ImGuiWindowFlags_NoNav |
+                             ImGuiWindowFlags_NoScrollbar |
+                             ImGuiWindowFlags_NoScrollWithMouse;
+    
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
+    
+    ImGui::Begin("##VideoBackground", nullptr, flags);
+    
+    ImVec2 windowSize = viewport->Size;
     
     if (_hasVideo && _videoTexture) {
-        // Calculate aspect ratio and scale
         float videoAspect = (float)_decoder->GetWidth() / (float)_decoder->GetHeight();
         float windowAspect = windowSize.x / windowSize.y;
         
@@ -143,65 +166,78 @@ void MediaPlayer::DrawVideoView() {
         ImVec2 imagePos;
         
         if (windowAspect > videoAspect) {
-            // Window is wider - fit to height
             imageSize.y = windowSize.y;
             imageSize.x = imageSize.y * videoAspect;
             imagePos.x = (windowSize.x - imageSize.x) * 0.5f;
             imagePos.y = 0;
         } else {
-            // Window is taller - fit to width
             imageSize.x = windowSize.x;
             imageSize.y = imageSize.x / videoAspect;
             imagePos.x = 0;
             imagePos.y = (windowSize.y - imageSize.y) * 0.5f;
         }
         
-        // Center the video
-        ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + imagePos.x, 
-                                   ImGui::GetCursorPosY() + imagePos.y));
+        ImGui::SetCursorPos(imagePos);
         ImGui::Image(_videoTexture->GetImGuiTextureID(), imageSize);
     } else {
-        // Show placeholder
         ImVec2 textSize = ImGui::CalcTextSize(ICON_FA_VIDEO " No video loaded");
         ImGui::SetCursorPos(ImVec2(
             (windowSize.x - textSize.x) * 0.5f,
             (windowSize.y - textSize.y) * 0.5f
         ));
         ImGui::TextDisabled(ICON_FA_VIDEO " No video loaded");
+        
+        ImVec2 subTextSize = ImGui::CalcTextSize("Press Ctrl+O to open a video file");
         ImGui::SetCursorPos(ImVec2(
-            (windowSize.x - 200) * 0.5f,
-            (windowSize.y + textSize.y) * 0.5f + 20
+            (windowSize.x - subTextSize.x) * 0.5f,
+            (windowSize.y + textSize.y) * 0.5f + 10
         ));
         ImGui::TextDisabled("Press Ctrl+O to open a video file");
     }
     
     ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
 }
 
 void MediaPlayer::DrawControls() {
     if (!_showControls) return;
     
-    ImGui::Begin("Controls", &_showControls);
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    float controlsHeight = 120.0f;
+    float padding = 20.0f;
     
-    // Playback controls
-    ImGui::Text("Playback");
-    ImGui::Separator();
+    ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + padding, 
+                                    viewport->Pos.y + viewport->Size.y - controlsHeight - padding));
+    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x - padding * 2, controlsHeight));
     
-    // Play/Pause button
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
+                             ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoResize |
+                             ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_NoNav;
+    
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.9f));
+    
+    ImGui::Begin("##Controls", nullptr, flags);
+    
+    float buttonWidth = 40.0f;
+    float buttonHeight = 30.0f;
+    
     if (_isPlaying) {
-        if (ImGui::Button(ICON_FA_PAUSE " Pause", ImVec2(100, 0))) {
+        if (ImGui::Button(ICON_FA_PAUSE, ImVec2(buttonWidth, buttonHeight))) {
             TogglePlayPause();
         }
     } else {
-        if (ImGui::Button(ICON_FA_PLAY " Play", ImVec2(100, 0))) {
+        if (ImGui::Button(ICON_FA_PLAY, ImVec2(buttonWidth, buttonHeight))) {
             TogglePlayPause();
         }
     }
     
     ImGui::SameLine();
     
-    // Stop button
-    if (ImGui::Button(ICON_FA_STOP " Stop", ImVec2(100, 0))) {
+    if (ImGui::Button(ICON_FA_STOP, ImVec2(buttonWidth, buttonHeight))) {
         _isPlaying = false;
         _pausedAtTime = 0.0;
         SeekTo(0.0);
@@ -209,32 +245,48 @@ void MediaPlayer::DrawControls() {
     
     ImGui::SameLine();
     
-    // Open file button
-    if (ImGui::Button(ICON_FA_FOLDER_OPEN " Open", ImVec2(100, 0))) {
+    if (ImGui::Button(ICON_FA_FOLDER_OPEN, ImVec2(buttonWidth, buttonHeight))) {
         OpenFile();
     }
     
-    ImGui::Spacing();
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100.0f);
+    ImGui::SliderFloat("##volume", &_volume, 0.0f, 1.0f, ICON_FA_VOLUME_HIGH " %.0f%%");
+    
+    ImGui::SameLine();
+    
+    if (_hasVideo) {
+        double duration = _decoder->GetDuration();
+        double currentTime = _isPlaying 
+            ? ElapsedTime() - _videoStartTime + _pausedAtTime 
+            : _pausedAtTime;
+        
+        if (currentTime > duration) {
+            currentTime = duration;
+            _isPlaying = false;
+        }
+        
+        int currentMin = (int)currentTime / 60;
+        int currentSec = (int)currentTime % 60;
+        int durationMin = (int)duration / 60;
+        int durationSec = (int)duration % 60;
+        
+        ImGui::Text("%02d:%02d / %02d:%02d", currentMin, currentSec, durationMin, durationSec);
+    }
+    
     DrawTimeline();
     
-    // Volume control
-    ImGui::Spacing();
-    ImGui::Text("Volume");
-    ImGui::Separator();
-    ImGui::SliderFloat("##volume", &_volume, 0.0f, 1.0f, "%.2f");
-    
-    // File info
     if (_hasVideo) {
-        ImGui::Spacing();
-        ImGui::Text("File Info");
-        ImGui::Separator();
-        ImGui::Text("File: %s", _currentFilePath.c_str());
-        ImGui::Text("Resolution: %dx%d", _decoder->GetWidth(), _decoder->GetHeight());
-        ImGui::Text("FPS: %.2f", _decoder->GetFPS());
-        ImGui::Text("Duration: %.2f seconds", _decoder->GetDuration());
+        ImGui::Text("%s - %dx%d @ %.1f FPS", 
+            _currentFilePath.c_str(),
+            _decoder->GetWidth(), 
+            _decoder->GetHeight(), 
+            _decoder->GetFPS());
     }
     
     ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 }
 
 void MediaPlayer::DrawTimeline() {
@@ -245,37 +297,25 @@ void MediaPlayer::DrawTimeline() {
         ? ElapsedTime() - _videoStartTime + _pausedAtTime 
         : _pausedAtTime;
     
-    // Clamp current time
     if (currentTime > duration) {
         currentTime = duration;
         _isPlaying = false;
     }
     
-    // Update seek bar
     if (!_isSeeking) {
         _seekBarValue = (float)(currentTime / duration);
     }
     
-    // Timeline slider
-    ImGui::Text("Timeline");
-    if (ImGui::SliderFloat("##timeline", &_seekBarValue, 0.0f, 1.0f, "%.3f")) {
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::SliderFloat("##timeline", &_seekBarValue, 0.0f, 1.0f, "")) {
         _isSeeking = true;
     }
     
-    // Check if user released the slider
     if (_isSeeking && !ImGui::IsItemActive()) {
         double newTime = _seekBarValue * duration;
         SeekTo(newTime);
         _isSeeking = false;
     }
-    
-    // Time display
-    int currentMin = (int)currentTime / 60;
-    int currentSec = (int)currentTime % 60;
-    int durationMin = (int)duration / 60;
-    int durationSec = (int)duration % 60;
-    
-    ImGui::Text("%02d:%02d / %02d:%02d", currentMin, currentSec, durationMin, durationSec);
 }
 
 void MediaPlayer::OpenFile() {
