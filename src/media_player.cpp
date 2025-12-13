@@ -521,28 +521,45 @@ void MediaPlayer::DrawWindowControls() {
     if (!window) return;
 
     const float icon_size = ImGui::GetFrameHeight();
-    const float spacing = 2.0f;
+    const float spacing = 4.0f;
     const float total_w = 3 * icon_size + 2 * spacing + 8.0f;
     float start_x = ImGui::GetWindowWidth() - total_w;
 
     ImGui::SetCursorPosX(start_x);
 
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.4f, 0.4f, 0.4f, 0.6f));
+    ImVec4 normal_color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+    ImVec4 hover_color = ImVec4(1.0f, 0.8f, 0.0f, 1.0f);
+    ImVec4 close_hover_color = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
 
-    ImGui::PushID("minimize_btn");
-    if (ImGui::Button(ICON_FA_MINUS, ImVec2(icon_size, icon_size))) {
+    auto draw_icon_button = [&](const char* id, const char* icon, ImVec4 hovered_col, auto on_click) {
+        ImGui::PushID(id);
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton(id, ImVec2(icon_size, icon_size));
+        bool hovered = ImGui::IsItemHovered();
+        bool clicked = ImGui::IsItemClicked();
+        
+        ImVec4 text_col = hovered ? hovered_col : normal_color;
+        ImVec2 text_size = ImGui::CalcTextSize(icon);
+        ImVec2 text_pos = ImVec2(
+            pos.x + (icon_size - text_size.x) * 0.5f,
+            pos.y + (icon_size - text_size.y) * 0.5f
+        );
+        ImGui::GetWindowDrawList()->AddText(text_pos, ImGui::ColorConvertFloat4ToU32(text_col), icon);
+        
+        if (clicked) {
+            on_click();
+        }
+        ImGui::PopID();
+    };
+
+    draw_icon_button("minimize_btn", ICON_FA_MINUS, hover_color, [&]() {
         window->Iconify();
-    }
-    ImGui::PopID();
+    });
 
     ImGui::SameLine(0, spacing);
 
-    ImGui::PushID("maximize_btn");
     const char* maximize_icon = _isCustomMaximized ? ICON_FA_WINDOW_RESTORE : ICON_FA_WINDOW_MAXIMIZE;
-    if (ImGui::Button(maximize_icon, ImVec2(icon_size, icon_size))) {
-        GLFWwindow* glfw_win = window->GetNativeHandle();
+    draw_icon_button("maximize_btn", maximize_icon, hover_color, [&]() {
         if (!_isCustomMaximized) {
             window->GetPosition(_prevWinX, _prevWinY);
             tvk::Extent2D ext = window->GetExtent();
@@ -582,21 +599,13 @@ void MediaPlayer::DrawWindowControls() {
             window->SetSize(_prevWinW, _prevWinH);
             _isCustomMaximized = false;
         }
-    }
-    ImGui::PopID();
+    });
 
     ImGui::SameLine(0, spacing);
 
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 0.8f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.9f, 0.1f, 0.1f, 1.0f));
-    ImGui::PushID("close_btn");
-    if (ImGui::Button(ICON_FA_XMARK, ImVec2(icon_size, icon_size))) {
+    draw_icon_button("close_btn", ICON_FA_XMARK, close_hover_color, [&]() {
         Quit();
-    }
-    ImGui::PopID();
-    ImGui::PopStyleColor(2);
-
-    ImGui::PopStyleColor(3);
+    });
 }
 
 } // namespace tvk_media
