@@ -5,7 +5,9 @@
 
 #include "media_player.h"
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <tinyvk/assets/icons_font_awesome.h>
+#include <GLFW/glfw3.h>
 
 namespace tvk_media {
 
@@ -20,6 +22,18 @@ MediaPlayer::MediaPlayer()
     , _showControls(true)
     , _seekBarValue(0.0f)
     , _isSeeking(false)
+    , _isDragging(false)
+    , _isResizing(false)
+    , _resizeDir(0)
+    , _dragOffsetX(0.0f)
+    , _dragOffsetY(0.0f)
+    , _lastMouseX(0.0f)
+    , _lastMouseY(0.0f)
+    , _isCustomMaximized(false)
+    , _prevWinX(0)
+    , _prevWinY(0)
+    , _prevWinW(1600)
+    , _prevWinH(900)
 {
 }
 
@@ -68,6 +82,8 @@ void MediaPlayer::OnStop() {
 
 void MediaPlayer::DrawMenuBar() {
     if (ImGui::BeginMainMenuBar()) {
+        HandleWindowDragging();
+
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem(ICON_FA_FOLDER_OPEN " Open", "Ctrl+O")) {
                 OpenFile();
@@ -104,18 +120,13 @@ void MediaPlayer::DrawMenuBar() {
             }
             ImGui::EndMenu();
         }
-        
-        // Display info on the right side
-        if (_hasVideo && _decoder) {
-            ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 300);
-            ImGui::Text("Resolution: %dx%d | FPS: %.1f", 
-                       _decoder->GetWidth(), 
-                       _decoder->GetHeight(), 
-                       _decoder->GetFPS());
-        }
+
+        DrawWindowControls();
         
         ImGui::EndMainMenuBar();
     }
+
+    HandleWindowResizing();
 }
 
 void MediaPlayer::DrawVideoView() {
@@ -369,6 +380,223 @@ void MediaPlayer::SeekTo(double timeSeconds) {
         
         TVK_LOG_INFO("Seeked to {:.2f}s", timeSeconds);
     }
+}
+
+void MediaPlayer::HandleWindowDragging() {
+    tvk::Window* window = GetWindow();
+    if (!window) return;
+
+    GLFWwindow* glfw_win = window->GetNativeHandle();
+    
+    double cursor_x, cursor_y;
+    glfwGetCursorPos(glfw_win, &cursor_x, &cursor_y);
+    
+    tvk::i32 win_x, win_y;
+    window->GetPosition(win_x, win_y);
+    
+    float screen_mouse_x = static_cast<float>(win_x) + static_cast<float>(cursor_x);
+    float screen_mouse_y = static_cast<float>(win_y) + static_cast<float>(cursor_y);
+    
+    ImVec2 menu_bar_size = ImVec2(ImGui::GetWindowSize().x, ImGui::GetFrameHeight());
+
+    bool mouse_over_menu_bar = (cursor_x >= 0 &&
+                                cursor_x <= static_cast<double>(menu_bar_size.x) - 120 &&
+                                cursor_y >= 0 &&
+                                cursor_y <= static_cast<double>(menu_bar_size.y));
+
+    if (mouse_over_menu_bar && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !ImGui::IsAnyItemHovered()) {
+        _isDragging = true;
+        _dragOffsetX = screen_mouse_x;
+        _dragOffsetY = screen_mouse_y;
+        _prevWinX = win_x;
+        _prevWinY = win_y;
+    }
+
+    if (_isDragging) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (_isCustomMaximized) {
+                tvk::Extent2D ext = window->GetExtent();
+                float ratio = static_cast<float>(cursor_x) / static_cast<float>(ext.width);
+                _isCustomMaximized = false;
+                window->SetSize(_prevWinW, _prevWinH);
+                window->GetPosition(win_x, win_y);
+                _dragOffsetX = screen_mouse_x;
+                _dragOffsetY = screen_mouse_y;
+                _prevWinX = win_x;
+                _prevWinY = win_y;
+                _dragOffsetX = static_cast<float>(win_x) + ratio * static_cast<float>(_prevWinW);
+            }
+            int new_x = _prevWinX + static_cast<int>(screen_mouse_x - _dragOffsetX);
+            int new_y = _prevWinY + static_cast<int>(screen_mouse_y - _dragOffsetY);
+            window->SetPosition(new_x, new_y);
+        } else {
+            _isDragging = false;
+        }
+    }
+}
+
+void MediaPlayer::HandleWindowResizing() {
+    tvk::Window* window = GetWindow();
+    if (!window) return;
+
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImVec2 win_pos = viewport->Pos;
+    ImVec2 win_size = viewport->Size;
+    ImVec2 mouse_pos = ImGui::GetMousePos();
+    const float border_thickness = 6.0f;
+
+    ImRect right_border(win_pos.x + win_size.x - border_thickness, win_pos.y,
+                        win_pos.x + win_size.x, win_pos.y + win_size.y);
+    ImRect bottom_border(win_pos.x, win_pos.y + win_size.y - border_thickness,
+                         win_pos.x + win_size.x, win_pos.y + win_size.y);
+    ImRect corner(win_pos.x + win_size.x - border_thickness,
+                  win_pos.y + win_size.y - border_thickness,
+                  win_pos.x + win_size.x, win_pos.y + win_size.y);
+
+    if (!_isResizing) {
+        if (corner.Contains(mouse_pos)) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                _isResizing = true;
+                _resizeDir = 3;
+                _isCustomMaximized = false;
+            }
+        } else if (right_border.Contains(mouse_pos)) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                _isResizing = true;
+                _resizeDir = 1;
+                _isCustomMaximized = false;
+            }
+        } else if (bottom_border.Contains(mouse_pos)) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                _isResizing = true;
+                _resizeDir = 2;
+                _isCustomMaximized = false;
+            }
+        }
+    }
+
+    if (_isResizing) {
+        if (_resizeDir == 1)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        else if (_resizeDir == 2)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        else if (_resizeDir == 3)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            float delta_x = mouse_pos.x - _lastMouseX;
+            float delta_y = mouse_pos.y - _lastMouseY;
+            tvk::Extent2D ext = window->GetExtent();
+            tvk::u32 width = ext.width;
+            tvk::u32 height = ext.height;
+
+            if (_resizeDir == 1 || _resizeDir == 3) {
+                int new_width = static_cast<int>(width) + static_cast<int>(delta_x);
+                width = new_width > 400 ? static_cast<tvk::u32>(new_width) : 400;
+            }
+            if (_resizeDir == 2 || _resizeDir == 3) {
+                int new_height = static_cast<int>(height) + static_cast<int>(delta_y);
+                height = new_height > 300 ? static_cast<tvk::u32>(new_height) : 300;
+            }
+
+            window->SetSize(width, height);
+        }
+
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            _isResizing = false;
+            _resizeDir = 0;
+        }
+    }
+
+    _lastMouseX = mouse_pos.x;
+    _lastMouseY = mouse_pos.y;
+}
+
+void MediaPlayer::DrawWindowControls() {
+    tvk::Window* window = GetWindow();
+    if (!window) return;
+
+    const float icon_size = ImGui::GetFrameHeight();
+    const float spacing = 2.0f;
+    const float total_w = 3 * icon_size + 2 * spacing + 8.0f;
+    float start_x = ImGui::GetWindowWidth() - total_w;
+
+    ImGui::SetCursorPosX(start_x);
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.4f, 0.4f, 0.4f, 0.6f));
+
+    ImGui::PushID("minimize_btn");
+    if (ImGui::Button(ICON_FA_MINUS, ImVec2(icon_size, icon_size))) {
+        window->Iconify();
+    }
+    ImGui::PopID();
+
+    ImGui::SameLine(0, spacing);
+
+    ImGui::PushID("maximize_btn");
+    const char* maximize_icon = _isCustomMaximized ? ICON_FA_WINDOW_RESTORE : ICON_FA_WINDOW_MAXIMIZE;
+    if (ImGui::Button(maximize_icon, ImVec2(icon_size, icon_size))) {
+        GLFWwindow* glfw_win = window->GetNativeHandle();
+        if (!_isCustomMaximized) {
+            window->GetPosition(_prevWinX, _prevWinY);
+            tvk::Extent2D ext = window->GetExtent();
+            _prevWinW = ext.width;
+            _prevWinH = ext.height;
+
+            int wx = _prevWinX + static_cast<int>(_prevWinW) / 2;
+            int wy = _prevWinY + static_cast<int>(_prevWinH) / 2;
+            int monitor_count = 0;
+            GLFWmonitor** monitors = glfwGetMonitors(&monitor_count);
+
+            int work_x = 0, work_y = 0, work_w = 0, work_h = 0;
+            bool found = false;
+            for (int i = 0; i < monitor_count; ++i) {
+                int mx, my, mw, mh;
+                glfwGetMonitorWorkarea(monitors[i], &mx, &my, &mw, &mh);
+                if (wx >= mx && wx < mx + mw && wy >= my && wy < my + mh) {
+                    work_x = mx; work_y = my; work_w = mw; work_h = mh;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                GLFWmonitor* primary = glfwGetPrimaryMonitor();
+                if (primary)
+                    glfwGetMonitorWorkarea(primary, &work_x, &work_y, &work_w, &work_h);
+            }
+
+            if (work_w > 0 && work_h > 0) {
+                window->SetPosition(work_x, work_y);
+                window->SetSize(static_cast<tvk::u32>(work_w), static_cast<tvk::u32>(work_h));
+                _isCustomMaximized = true;
+            }
+        } else {
+            window->SetPosition(_prevWinX, _prevWinY);
+            window->SetSize(_prevWinW, _prevWinH);
+            _isCustomMaximized = false;
+        }
+    }
+    ImGui::PopID();
+
+    ImGui::SameLine(0, spacing);
+
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 0.8f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.9f, 0.1f, 0.1f, 1.0f));
+    ImGui::PushID("close_btn");
+    if (ImGui::Button(ICON_FA_XMARK, ImVec2(icon_size, icon_size))) {
+        Quit();
+    }
+    ImGui::PopID();
+    ImGui::PopStyleColor(2);
+
+    ImGui::PopStyleColor(3);
 }
 
 } // namespace tvk_media

@@ -31,6 +31,9 @@ private:
     void DrawVideoView();
     void DrawControls();
     void DrawTimeline();
+    void HandleWindowDragging();
+    void HandleWindowResizing();
+    void DrawWindowControls();
     
     void OpenFile();
     void TogglePlayPause();
@@ -45,8 +48,8 @@ private:
     // Playback state
     bool _isPlaying;
     bool _hasVideo;
-    double _videoStartTime;  // When playback started
-    double _pausedAtTime;    // Time when video was paused
+    double _videoStartTime;
+    double _pausedAtTime;
     float _volume;
     
     // UI state
@@ -54,6 +57,20 @@ private:
     bool _showControls;
     float _seekBarValue;
     bool _isSeeking;
+
+    // Window state for custom title bar
+    bool _isDragging;
+    bool _isResizing;
+    int _resizeDir;
+    float _dragOffsetX;
+    float _dragOffsetY;
+    float _lastMouseX;
+    float _lastMouseY;
+    bool _isCustomMaximized;
+    int _prevWinX;
+    int _prevWinY;
+    unsigned int _prevWinW;
+    unsigned int _prevWinH;
 };
 
 } // namespace tvk_media

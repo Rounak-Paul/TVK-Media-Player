@@ -12,10 +12,11 @@ int main() {
         
         tvk::AppConfig config;
         config.title = "TVK Media Player";
-        config.width = 1600;
-        config.height = 900;
+        config.width = 1280;
+        config.height = 720;
         config.mode = tvk::AppMode::GUI;
         config.vsync = true;
+        config.decorated = false;
         
         app.Run(config);
     } catch (const std::exception& e) {
