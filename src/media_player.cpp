@@ -970,11 +970,19 @@ void MediaPlayer::DrawFiltersWindow() {
 }
 
 void MediaPlayer::DrawPostProcessWindow() {
-    ImGui::SetNextWindowSize(ImVec2(300, 350), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(300, 400), ImGuiCond_FirstUseEver);
     
     if (ImGui::Begin("Post Processing", &_showPostProcessWindow)) {
         PostProcessSettings& pp = _videoEffects->GetPostProcess();
         
+        ImGui::Text("Bloom");
+        ImGui::Separator();
+        
+        ImGui::SliderFloat("Bloom Intensity", &pp.bloom, 0.0f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Bloom Threshold", &pp.bloomThreshold, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Bloom Spread", &pp.bloomRadius, 1.0f, 6.0f, "%.0f");
+        
+        ImGui::Spacing();
         ImGui::Text("Effects");
         ImGui::Separator();
         

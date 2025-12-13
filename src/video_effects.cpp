@@ -10,7 +10,8 @@ static const char* g_effectsComputeShader = R"(
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(binding = 0, rgba8) uniform image2D outputImage;
+layout(binding = 0, rgba8) readonly uniform image2D sourceImage;
+layout(binding = 1, rgba8) writeonly uniform image2D outputImage;
 
 layout(push_constant) uniform PushConstants {
     float brightness;
@@ -42,6 +43,11 @@ layout(push_constant) uniform PushConstants {
     int width;
     int height;
     int frameCounter;
+    
+    float bloom;
+    float bloomThreshold;
+    float bloomRadius;
+    int pad0;
 } pc;
 
 vec3 rgb_to_hsl(vec3 rgb) {
@@ -169,46 +175,103 @@ vec3 apply_filter(vec3 color, ivec2 coord) {
     
     if (pc.filterType == 7) {
         vec3 sum = vec3(0.0);
-        sum += imageLoad(outputImage, coord + ivec2(-1, -1)).rgb * 0.0;
-        sum += imageLoad(outputImage, coord + ivec2( 0, -1)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2( 1, -1)).rgb * 0.0;
-        sum += imageLoad(outputImage, coord + ivec2(-1,  0)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2( 0,  0)).rgb * 5.0;
-        sum += imageLoad(outputImage, coord + ivec2( 1,  0)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2(-1,  1)).rgb * 0.0;
-        sum += imageLoad(outputImage, coord + ivec2( 0,  1)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2( 1,  1)).rgb * 0.0;
+        sum += imageLoad(sourceImage, coord + ivec2(-1, -1)).rgb * 0.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 0, -1)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 1, -1)).rgb * 0.0;
+        sum += imageLoad(sourceImage, coord + ivec2(-1,  0)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 0,  0)).rgb * 5.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 1,  0)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2(-1,  1)).rgb * 0.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 0,  1)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 1,  1)).rgb * 0.0;
         return clamp(sum, 0.0, 1.0);
     }
     
     if (pc.filterType == 8) {
         vec3 sum = vec3(0.0);
-        sum += imageLoad(outputImage, coord + ivec2(-1, -1)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2( 0, -1)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2( 1, -1)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2(-1,  0)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2( 0,  0)).rgb * 8.0;
-        sum += imageLoad(outputImage, coord + ivec2( 1,  0)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2(-1,  1)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2( 0,  1)).rgb * -1.0;
-        sum += imageLoad(outputImage, coord + ivec2( 1,  1)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2(-1, -1)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 0, -1)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 1, -1)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2(-1,  0)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 0,  0)).rgb * 8.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 1,  0)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2(-1,  1)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 0,  1)).rgb * -1.0;
+        sum += imageLoad(sourceImage, coord + ivec2( 1,  1)).rgb * -1.0;
         return clamp(sum, 0.0, 1.0);
     }
     
     return color;
 }
 
+vec3 sample_bloom(ivec2 coord, int scale) {
+    ivec2 sampleCoord = clamp(coord, ivec2(0), ivec2(pc.width - 1, pc.height - 1));
+    vec3 col = imageLoad(sourceImage, sampleCoord).rgb;
+    float lum = dot(col, vec3(0.299, 0.587, 0.114));
+    if (lum > pc.bloomThreshold) {
+        return max(col - pc.bloomThreshold, vec3(0.0));
+    }
+    return vec3(0.0);
+}
+
+vec3 blur_at_scale(ivec2 coord, int scale) {
+    vec3 accum = vec3(0.0);
+    float totalWeight = 0.0;
+    float sigma = float(scale) * 1.5;
+    float sigma2 = 2.0 * sigma * sigma;
+    
+    int kernelSize = scale * 2;
+    
+    for (int y = -kernelSize; y <= kernelSize; y += scale) {
+        for (int x = -kernelSize; x <= kernelSize; x += scale) {
+            float dist2 = float(x * x + y * y);
+            float weight = exp(-dist2 / sigma2);
+            accum += sample_bloom(coord + ivec2(x, y), scale) * weight;
+            totalWeight += weight;
+        }
+    }
+    
+    return accum / max(totalWeight, 0.001);
+}
+
 vec3 apply_post_process(vec3 color, ivec2 coord) {
     vec2 uv = vec2(coord) / vec2(pc.width, pc.height);
     
+    if (pc.bloom > 0.0) {
+        vec3 bloomAccum = vec3(0.0);
+        
+        float mipWeights[6] = float[](0.5, 0.3, 0.15, 0.1, 0.05, 0.025);
+        int scales[6] = int[](1, 2, 4, 8, 16, 32);
+        int numMips = int(pc.bloomRadius);
+        numMips = clamp(numMips, 1, 6);
+        
+        float totalWeight = 0.0;
+        for (int m = 0; m < numMips; m++) {
+            bloomAccum += blur_at_scale(coord, scales[m]) * mipWeights[m];
+            totalWeight += mipWeights[m];
+        }
+        
+        bloomAccum /= totalWeight;
+        color += bloomAccum * pc.bloom;
+    }
+    
     if (pc.chromaticAberration > 0.0) {
-        float offset = pc.chromaticAberration * 10.0;
-        ivec2 rCoord = coord - ivec2(int(offset), 0);
-        ivec2 bCoord = coord + ivec2(int(offset), 0);
+        vec2 center = vec2(pc.width, pc.height) * 0.5;
+        vec2 dir = vec2(coord) - center;
+        float dist = length(dir) / length(center);
+        dir = normalize(dir);
+        
+        float offset = pc.chromaticAberration * 20.0 * dist;
+        
+        vec2 rOffset = dir * offset;
+        vec2 bOffset = -dir * offset;
+        
+        ivec2 rCoord = ivec2(vec2(coord) - rOffset);
+        ivec2 bCoord = ivec2(vec2(coord) + bOffset);
         rCoord = clamp(rCoord, ivec2(0), ivec2(pc.width - 1, pc.height - 1));
         bCoord = clamp(bCoord, ivec2(0), ivec2(pc.width - 1, pc.height - 1));
-        color.r = imageLoad(outputImage, rCoord).r;
-        color.b = imageLoad(outputImage, bCoord).b;
+        color.r = imageLoad(sourceImage, rCoord).r;
+        color.b = imageLoad(sourceImage, bCoord).b;
     }
     
     if (pc.vintageEnabled != 0) {
@@ -252,7 +315,7 @@ void main() {
         return;
     }
     
-    vec4 pixel = imageLoad(outputImage, coord);
+    vec4 pixel = imageLoad(sourceImage, coord);
     vec3 color = pixel.rgb;
     
     color = apply_color_adjustments(color);
@@ -271,7 +334,13 @@ VideoEffects::VideoEffects()
     , _descriptorSetLayout(VK_NULL_HANDLE)
     , _descriptorSet(VK_NULL_HANDLE)
     , _shaderModule(VK_NULL_HANDLE)
-    , _lastImageView(VK_NULL_HANDLE)
+    , _stagingImage(VK_NULL_HANDLE)
+    , _stagingMemory(VK_NULL_HANDLE)
+    , _stagingImageView(VK_NULL_HANDLE)
+    , _stagingWidth(0)
+    , _stagingHeight(0)
+    , _lastSrcView(VK_NULL_HANDLE)
+    , _lastDstView(VK_NULL_HANDLE)
     , _frameCounter(0)
     , _initialized(false)
 {
@@ -315,6 +384,8 @@ void VideoEffects::Cleanup() {
     
     vkDeviceWaitIdle(device);
     
+    DestroyStagingImage();
+    
     if (_computePipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(device, _computePipeline, nullptr);
         _computePipeline = VK_NULL_HANDLE;
@@ -339,17 +410,24 @@ void VideoEffects::Cleanup() {
 }
 
 bool VideoEffects::CreateDescriptorSetLayout() {
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    binding.pImmutableSamplers = nullptr;
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[0].pImmutableSamplers = nullptr;
+    
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[1].pImmutableSamplers = nullptr;
     
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
     
     if (vkCreateDescriptorSetLayout(_context->GetDevice(), &layoutInfo, nullptr, &_descriptorSetLayout) != VK_SUCCESS) {
         return false;
@@ -416,24 +494,128 @@ bool VideoEffects::AllocateDescriptorSet() {
     return true;
 }
 
-void VideoEffects::UpdateDescriptorSet(VkImageView imageView) {
-    if (imageView == _lastImageView) return;
-    _lastImageView = imageView;
+void VideoEffects::UpdateDescriptorSet(VkImageView srcView, VkImageView dstView) {
+    if (srcView == _lastSrcView && dstView == _lastDstView) return;
+    _lastSrcView = srcView;
+    _lastDstView = dstView;
     
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.imageView = imageView;
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorImageInfo imageInfos[2]{};
+    imageInfos[0].imageView = srcView;
+    imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    imageInfos[1].imageView = dstView;
+    imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = _descriptorSet;
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    write.descriptorCount = 1;
-    write.pImageInfo = &imageInfo;
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = _descriptorSet;
+    writes[0].dstBinding = 0;
+    writes[0].dstArrayElement = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[0].descriptorCount = 1;
+    writes[0].pImageInfo = &imageInfos[0];
     
-    vkUpdateDescriptorSets(_context->GetDevice(), 1, &write, 0, nullptr);
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = _descriptorSet;
+    writes[1].dstBinding = 1;
+    writes[1].dstArrayElement = 0;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[1].descriptorCount = 1;
+    writes[1].pImageInfo = &imageInfos[1];
+    
+    vkUpdateDescriptorSets(_context->GetDevice(), 2, writes, 0, nullptr);
+}
+
+bool VideoEffects::CreateStagingImage(uint32_t width, uint32_t height) {
+    if (_stagingImage != VK_NULL_HANDLE && _stagingWidth == width && _stagingHeight == height) {
+        return true;
+    }
+    
+    DestroyStagingImage();
+    
+    VkDevice device = _context->GetDevice();
+    
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.extent.width = width;
+    imageInfo.extent.height = height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    
+    if (vkCreateImage(device, &imageInfo, nullptr, &_stagingImage) != VK_SUCCESS) {
+        return false;
+    }
+    
+    VkMemoryRequirements memReqs;
+    vkGetImageMemoryRequirements(device, _stagingImage, &memReqs);
+    
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReqs.size;
+    allocInfo.memoryTypeIndex = _context->FindMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &_stagingMemory) != VK_SUCCESS) {
+        vkDestroyImage(device, _stagingImage, nullptr);
+        _stagingImage = VK_NULL_HANDLE;
+        return false;
+    }
+    
+    vkBindImageMemory(device, _stagingImage, _stagingMemory, 0);
+    
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = _stagingImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+    
+    if (vkCreateImageView(device, &viewInfo, nullptr, &_stagingImageView) != VK_SUCCESS) {
+        vkFreeMemory(device, _stagingMemory, nullptr);
+        vkDestroyImage(device, _stagingImage, nullptr);
+        _stagingImage = VK_NULL_HANDLE;
+        _stagingMemory = VK_NULL_HANDLE;
+        return false;
+    }
+    
+    _stagingWidth = width;
+    _stagingHeight = height;
+    _lastSrcView = VK_NULL_HANDLE;
+    _lastDstView = VK_NULL_HANDLE;
+    
+    return true;
+}
+
+void VideoEffects::DestroyStagingImage() {
+    VkDevice device = _context->GetDevice();
+    
+    if (_stagingImageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, _stagingImageView, nullptr);
+        _stagingImageView = VK_NULL_HANDLE;
+    }
+    
+    if (_stagingImage != VK_NULL_HANDLE) {
+        vkDestroyImage(device, _stagingImage, nullptr);
+        _stagingImage = VK_NULL_HANDLE;
+    }
+    
+    if (_stagingMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, _stagingMemory, nullptr);
+        _stagingMemory = VK_NULL_HANDLE;
+    }
+    
+    _stagingWidth = 0;
+    _stagingHeight = 0;
 }
 
 bool VideoEffects::HasActiveEffects() const {
@@ -454,30 +636,87 @@ void VideoEffects::ProcessFrame(tvk::Texture* texture) {
     uint32_t width = texture->GetWidth();
     uint32_t height = texture->GetHeight();
     
-    UpdateDescriptorSet(texture->GetImageView());
+    if (!CreateStagingImage(width, height)) {
+        TVK_LOG_ERROR("Failed to create staging image for video effects");
+        return;
+    }
+    
+    UpdateDescriptorSet(_stagingImageView, texture->GetImageView());
     
     VkCommandBuffer cmd = _context->BeginSingleTimeCommands();
     
-    VkImageMemoryBarrier barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = texture->GetImage();
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    VkImageMemoryBarrier barriers[2]{};
+    
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].image = texture->GetImage();
+    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barriers[0].subresourceRange.baseMipLevel = 0;
+    barriers[0].subresourceRange.levelCount = 1;
+    barriers[0].subresourceRange.baseArrayLayer = 0;
+    barriers[0].subresourceRange.layerCount = 1;
+    barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    
+    barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].image = _stagingImage;
+    barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barriers[1].subresourceRange.baseMipLevel = 0;
+    barriers[1].subresourceRange.levelCount = 1;
+    barriers[1].subresourceRange.baseArrayLayer = 0;
+    barriers[1].subresourceRange.layerCount = 1;
+    barriers[1].srcAccessMask = 0;
+    barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     
     vkCmdPipelineBarrier(
         cmd,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, nullptr, 0, nullptr, 2, barriers
+    );
+    
+    VkImageCopy copyRegion{};
+    copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copyRegion.srcSubresource.mipLevel = 0;
+    copyRegion.srcSubresource.baseArrayLayer = 0;
+    copyRegion.srcSubresource.layerCount = 1;
+    copyRegion.srcOffset = {0, 0, 0};
+    copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copyRegion.dstSubresource.mipLevel = 0;
+    copyRegion.dstSubresource.baseArrayLayer = 0;
+    copyRegion.dstSubresource.layerCount = 1;
+    copyRegion.dstOffset = {0, 0, 0};
+    copyRegion.extent = {width, height, 1};
+    
+    vkCmdCopyImage(
+        cmd,
+        texture->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        _stagingImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1, &copyRegion
+    );
+    
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    
+    barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &barrier
+        0, 0, nullptr, 0, nullptr, 2, barriers
     );
     
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _computePipeline);
@@ -508,6 +747,10 @@ void VideoEffects::ProcessFrame(tvk::Texture* texture) {
     pc.width = static_cast<int>(width);
     pc.height = static_cast<int>(height);
     pc.frameCounter = static_cast<int>(_frameCounter);
+    pc.bloom = _postProcess.bloom;
+    pc.bloomThreshold = _postProcess.bloomThreshold;
+    pc.bloomRadius = _postProcess.bloomRadius;
+    pc.pad0 = 0;
     
     vkCmdPushConstants(cmd, _pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(EffectsPushConstants), &pc);
     
@@ -515,16 +758,18 @@ void VideoEffects::ProcessFrame(tvk::Texture* texture) {
     uint32_t groupCountY = (height + 15) / 16;
     vkCmdDispatch(cmd, groupCountX, groupCountY, 1);
     
-    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barriers[0].image = texture->GetImage();
+    barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     
     vkCmdPipelineBarrier(
         cmd,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &barrier
+        0, 0, nullptr, 0, nullptr, 1, barriers
     );
     
     _context->EndSingleTimeCommands(cmd);

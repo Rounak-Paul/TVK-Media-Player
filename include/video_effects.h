@@ -76,10 +76,13 @@ struct PostProcessSettings {
     float scanlines = 0.0f;
     bool vintageEnabled = false;
     float vintageStrength = 0.5f;
+    float bloom = 0.0f;
+    float bloomThreshold = 0.8f;
+    float bloomRadius = 4.0f;
     
     bool IsDefault() const {
         return vignette == 0.0f && filmGrain == 0.0f &&
-               chromaticAberration == 0.0f && scanlines == 0.0f && !vintageEnabled;
+               chromaticAberration == 0.0f && scanlines == 0.0f && !vintageEnabled && bloom == 0.0f;
     }
     
     void Reset() {
@@ -90,6 +93,9 @@ struct PostProcessSettings {
         scanlines = 0.0f;
         vintageEnabled = false;
         vintageStrength = 0.5f;
+        bloom = 0.0f;
+        bloomThreshold = 0.8f;
+        bloomRadius = 4.0f;
     }
 };
 
@@ -123,6 +129,11 @@ struct EffectsPushConstants {
     int width;
     int height;
     int frameCounter;
+    
+    float bloom;
+    float bloomThreshold;
+    float bloomRadius;
+    int pad0;
 };
 
 class VideoEffects {
@@ -150,7 +161,9 @@ private:
     bool CreateComputePipeline();
     bool CreateDescriptorSetLayout();
     bool AllocateDescriptorSet();
-    void UpdateDescriptorSet(VkImageView imageView);
+    void UpdateDescriptorSet(VkImageView srcView, VkImageView dstView);
+    bool CreateStagingImage(uint32_t width, uint32_t height);
+    void DestroyStagingImage();
     
     tvk::Renderer* _renderer;
     tvk::VulkanContext* _context;
@@ -161,7 +174,14 @@ private:
     VkDescriptorSet _descriptorSet;
     VkShaderModule _shaderModule;
     
-    VkImageView _lastImageView;
+    VkImage _stagingImage;
+    VkDeviceMemory _stagingMemory;
+    VkImageView _stagingImageView;
+    uint32_t _stagingWidth;
+    uint32_t _stagingHeight;
+    
+    VkImageView _lastSrcView;
+    VkImageView _lastDstView;
     
     ColorAdjustments _colorAdjust;
     FilterSettings _filter;
