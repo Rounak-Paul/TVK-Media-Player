@@ -155,13 +155,11 @@ void MediaPlayer::DrawMenuBar() {
                 _pausedAtTime = 0.0;
                 SeekTo(0.0);
             }
-            ImGui::EndMenu();
-        }
-        
-        if (ImGui::BeginMenu("View")) {
+            ImGui::Separator();
             ImGui::MenuItem("Show Controls", nullptr, &_showControls);
             ImGui::EndMenu();
         }
+        
         
         if (ImGui::BeginMenu("Video")) {
             ImGui::MenuItem("Color Adjustments", nullptr, &_showColorWindow);
