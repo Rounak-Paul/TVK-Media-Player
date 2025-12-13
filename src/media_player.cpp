@@ -8,12 +8,17 @@
 #include <imgui_internal.h>
 #include <tinyvk/assets/icons_font_awesome.h>
 #include <GLFW/glfw3.h>
+#include <cmath>
 
 namespace tvk_media {
 
 MediaPlayer::MediaPlayer()
     : _decoder(nullptr)
+    , _thumbnailDecoder(nullptr)
     , _videoTexture(nullptr)
+    , _thumbnailTexture(nullptr)
+    , _lastThumbnailTime(-1.0)
+    , _showThumbnail(false)
     , _isPlaying(false)
     , _hasVideo(false)
     , _videoStartTime(0.0)
@@ -40,6 +45,7 @@ MediaPlayer::MediaPlayer()
 void MediaPlayer::OnStart() {
     TVK_LOG_INFO("Media Player started");
     _decoder = std::make_unique<VideoDecoder>();
+    _thumbnailDecoder = std::make_unique<VideoDecoder>();
 }
 
 void MediaPlayer::OnUpdate() {
@@ -77,36 +83,44 @@ void MediaPlayer::OnStop() {
         _videoTexture.reset();
     }
     
+    if (_thumbnailTexture) {
+        _thumbnailTexture.reset();
+    }
+    
     if (_decoder) {
         _decoder->Close();
+    }
+    
+    if (_thumbnailDecoder) {
+        _thumbnailDecoder->Close();
     }
 }
 
 void MediaPlayer::DrawMenuBar() {
-    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ImVec4(0.1f, 0.1f, 0.1f, 0.5f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ImVec4(0.05f, 0.05f, 0.08f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.08f, 0.85f));
     
     if (ImGui::BeginMainMenuBar()) {
         HandleWindowDragging();
 
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem(ICON_FA_FOLDER_OPEN " Open", "Ctrl+O")) {
+            if (ImGui::MenuItem("Open", "Ctrl+O")) {
                 OpenFile();
             }
             ImGui::Separator();
-            if (ImGui::MenuItem(ICON_FA_DOOR_OPEN " Exit", "Esc")) {
+            if (ImGui::MenuItem("Exit", "Esc")) {
                 Quit();
             }
             ImGui::EndMenu();
         }
         
         if (ImGui::BeginMenu("Playback")) {
-            const char* playPauseLabel = _isPlaying ? ICON_FA_PAUSE " Pause" : ICON_FA_PLAY " Play";
+            const char* playPauseLabel = _isPlaying ? "Pause" : "Play";
             if (ImGui::MenuItem(playPauseLabel, "Space", nullptr, _hasVideo)) {
                 TogglePlayPause();
             }
             ImGui::Separator();
-            if (ImGui::MenuItem(ICON_FA_STOP " Stop", nullptr, nullptr, _hasVideo)) {
+            if (ImGui::MenuItem("Stop", nullptr, nullptr, _hasVideo)) {
                 _isPlaying = false;
                 _pausedAtTime = 0.0;
                 SeekTo(0.0);
@@ -120,7 +134,7 @@ void MediaPlayer::DrawMenuBar() {
         }
         
         if (ImGui::BeginMenu("Help")) {
-            if (ImGui::MenuItem(ICON_FA_INFO " About")) {
+            if (ImGui::MenuItem("About")) {
                 TVK_LOG_INFO("TVK Media Player v1.0.0");
             }
             ImGui::EndMenu();
@@ -204,12 +218,14 @@ void MediaPlayer::DrawControls() {
     if (!_showControls) return;
     
     ImGuiViewport* viewport = ImGui::GetMainViewport();
-    float controlsHeight = 120.0f;
-    float padding = 20.0f;
+    float barHeight = 52.0f;
+    float margin = 24.0f;
+    float barWidth = viewport->Size.x - margin * 2;
+    float barY = viewport->Pos.y + viewport->Size.y - barHeight - 20.0f;
+    float barX = viewport->Pos.x + margin;
     
-    ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + padding, 
-                                    viewport->Pos.y + viewport->Size.y - controlsHeight - padding));
-    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x - padding * 2, controlsHeight));
+    ImGui::SetNextWindowPos(ImVec2(barX, barY));
+    ImGui::SetNextWindowSize(ImVec2(barWidth, barHeight));
     
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
                              ImGuiWindowFlags_NoMove |
@@ -217,105 +233,258 @@ void MediaPlayer::DrawControls() {
                              ImGuiWindowFlags_NoSavedSettings |
                              ImGuiWindowFlags_NoNav;
     
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 0.9f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.08f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 0.08f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
     
     ImGui::Begin("##Controls", nullptr, flags);
     
-    float buttonWidth = 40.0f;
-    float buttonHeight = 30.0f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetWindowPos();
+    ImVec2 s = ImGui::GetWindowSize();
     
-    if (_isPlaying) {
-        if (ImGui::Button(ICON_FA_PAUSE, ImVec2(buttonWidth, buttonHeight))) {
-            TogglePlayPause();
-        }
-    } else {
-        if (ImGui::Button(ICON_FA_PLAY, ImVec2(buttonWidth, buttonHeight))) {
-            TogglePlayPause();
-        }
-    }
-    
-    ImGui::SameLine();
-    
-    if (ImGui::Button(ICON_FA_STOP, ImVec2(buttonWidth, buttonHeight))) {
-        _isPlaying = false;
-        _pausedAtTime = 0.0;
-        SeekTo(0.0);
-    }
-    
-    ImGui::SameLine();
-    
-    if (ImGui::Button(ICON_FA_FOLDER_OPEN, ImVec2(buttonWidth, buttonHeight))) {
-        OpenFile();
-    }
-    
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(100.0f);
-    ImGui::SliderFloat("##volume", &_volume, 0.0f, 1.0f, ICON_FA_VOLUME_HIGH " %.0f%%");
-    
-    ImGui::SameLine();
+    double currentTime = 0.0;
+    double duration = 1.0;
     
     if (_hasVideo) {
-        double duration = _decoder->GetDuration();
-        double currentTime = _isPlaying 
-            ? ElapsedTime() - _videoStartTime + _pausedAtTime 
+        duration = _decoder->GetDuration();
+        currentTime = _isPlaying 
+            ? ElapsedTime() - _videoStartTime 
             : _pausedAtTime;
-        
-        if (currentTime > duration) {
-            currentTime = duration;
-            _isPlaying = false;
-        }
-        
-        int currentMin = (int)currentTime / 60;
-        int currentSec = (int)currentTime % 60;
-        int durationMin = (int)duration / 60;
-        int durationSec = (int)duration % 60;
-        
-        ImGui::Text("%02d:%02d / %02d:%02d", currentMin, currentSec, durationMin, durationSec);
+        if (currentTime > duration) { currentTime = duration; _isPlaying = false; }
+        if (currentTime < 0) currentTime = 0;
+        if (!_isSeeking) _seekBarValue = (float)(currentTime / duration);
     }
     
-    DrawTimeline();
+    float pad = 16.0f;
+    float btnSize = 24.0f;
+    float centerY = s.y * 0.5f;
+    
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, btnSize);
+    
+    ImVec4 normCol(1, 1, 1, 0.6f);
+    ImVec4 hovCol(1, 1, 1, 1.0f);
+    
+    ImGui::SetCursorPos(ImVec2(pad, centerY - btnSize * 0.5f));
+    ImVec2 btnPos = ImGui::GetCursorScreenPos();
+    bool playHov = ImGui::IsMouseHoveringRect(btnPos, ImVec2(btnPos.x + btnSize, btnPos.y + btnSize));
+    ImGui::PushStyleColor(ImGuiCol_Text, playHov ? hovCol : normCol);
+    if (_isPlaying) {
+        if (ImGui::Button(ICON_FA_PAUSE, ImVec2(btnSize, btnSize))) TogglePlayPause();
+    } else {
+        if (ImGui::Button(ICON_FA_PLAY, ImVec2(btnSize, btnSize))) TogglePlayPause();
+    }
+    ImGui::PopStyleColor();
+    
+    ImGui::SameLine(0, 12);
+    btnPos = ImGui::GetCursorScreenPos();
+    bool prevHov = ImGui::IsMouseHoveringRect(btnPos, ImVec2(btnPos.x + btnSize, btnPos.y + btnSize));
+    ImGui::PushStyleColor(ImGuiCol_Text, prevHov ? hovCol : normCol);
+    if (ImGui::Button(ICON_FA_BACKWARD_STEP, ImVec2(btnSize, btnSize))) {
+        SeekTo(0.0);
+        _pausedAtTime = 0.0;
+    }
+    ImGui::PopStyleColor();
+    
+    ImGui::SameLine(0, 12);
+    btnPos = ImGui::GetCursorScreenPos();
+    bool nextHov = ImGui::IsMouseHoveringRect(btnPos, ImVec2(btnPos.x + btnSize, btnPos.y + btnSize));
+    ImGui::PushStyleColor(ImGuiCol_Text, nextHov ? hovCol : normCol);
+    if (ImGui::Button(ICON_FA_FORWARD_STEP, ImVec2(btnSize, btnSize))) {
+        if (_hasVideo) SeekTo(_decoder->GetDuration());
+    }
+    ImGui::PopStyleColor();
+    
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(3);
+    
+    float timeTextWidth = 50.0f;
+    float timeGap = 12.0f;
+    float timeX = pad + btnSize * 3 + 24;
+    
+    float volWidth = 60.0f;
+    float volIconW = 20.0f;
+    float rightEnd = s.x - pad;
+    float volSliderX = rightEnd - volWidth;
+    float volIconX = volSliderX - volIconW - 8;
+    
+    float sliderStart = timeX + timeTextWidth + timeGap;
+    float sliderEnd = volIconX - timeTextWidth - timeGap - 8;
+    float sliderWidth = sliderEnd - sliderStart;
     
     if (_hasVideo) {
-        ImGui::Text("%s - %dx%d @ %.1f FPS", 
-            _currentFilePath.c_str(),
-            _decoder->GetWidth(), 
-            _decoder->GetHeight(), 
-            _decoder->GetFPS());
+        int cm = (int)currentTime / 60, cs = (int)currentTime % 60;
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%d:%02d", cm, cs);
+        float tw = ImGui::CalcTextSize(buf).x;
+        ImGui::SetCursorPos(ImVec2(sliderStart - timeGap - tw, centerY - ImGui::GetTextLineHeight() * 0.5f));
+        ImGui::TextColored(ImVec4(1, 1, 1, 0.9f), "%s", buf);
+    }
+    
+    if (sliderWidth > 100) {
+        float sliderH = 4.0f;
+        float sliderY = centerY - sliderH * 0.5f;
+        ImVec2 sPos = ImVec2(p.x + sliderStart, p.y + sliderY);
+        
+        dl->AddRectFilled(sPos, ImVec2(sPos.x + sliderWidth, sPos.y + sliderH), 
+                          IM_COL32(255, 255, 255, 40), sliderH * 0.5f);
+        
+        bool hover = _hasVideo && ImGui::IsMouseHoveringRect(
+            ImVec2(sPos.x - 4, sPos.y - 10),
+            ImVec2(sPos.x + sliderWidth + 4, sPos.y + sliderH + 10));
+        
+        float hoverValue = 0.0f;
+        if (hover || _isSeeking) {
+            float mx = ImGui::GetMousePos().x - sPos.x;
+            hoverValue = mx / sliderWidth;
+            if (hoverValue < 0) hoverValue = 0;
+            if (hoverValue > 1) hoverValue = 1;
+        }
+        
+        if (_hasVideo) {
+            float prog = sliderWidth * _seekBarValue;
+            dl->AddRectFilled(sPos, ImVec2(sPos.x + prog, sPos.y + sliderH), 
+                              IM_COL32(255, 100, 50, 255), sliderH * 0.5f);
+            
+            if (hover || _isSeeking) {
+                dl->AddCircleFilled(ImVec2(sPos.x + prog, sPos.y + sliderH * 0.5f), 
+                                    6.0f, IM_COL32(255, 255, 255, 255));
+            }
+        }
+        
+        if (_hasVideo && (hover || _isSeeking)) {
+            double previewTime = _isSeeking ? (_seekBarValue * duration) : (hoverValue * duration);
+            
+            if (fabs(previewTime - _lastThumbnailTime) > 0.5 || _lastThumbnailTime < 0) {
+                if (_thumbnailDecoder->GetThumbnailAt(previewTime, _thumbnailFrame, 160, 90)) {
+                    _lastThumbnailTime = previewTime;
+                    _showThumbnail = true;
+                    
+                    tvk::TextureSpec spec;
+                    spec.width = _thumbnailFrame.width;
+                    spec.height = _thumbnailFrame.height;
+                    spec.format = tvk::TextureFormat::RGBA8;
+                    
+                    _thumbnailTexture = tvk::Texture::Create(
+                        GetRenderer(),
+                        _thumbnailFrame.data.data(),
+                        _thumbnailFrame.width,
+                        _thumbnailFrame.height,
+                        spec
+                    );
+                    
+                    if (_thumbnailTexture) {
+                        _thumbnailTexture->BindToImGui();
+                    }
+                }
+            }
+            
+            if (_showThumbnail && _thumbnailTexture) {
+                ImDrawList* fgDl = ImGui::GetForegroundDrawList();
+                float thumbW = (float)_thumbnailFrame.width;
+                float thumbH = (float)_thumbnailFrame.height;
+                float previewX = _isSeeking ? _seekBarValue : hoverValue;
+                float thumbX = sPos.x + previewX * sliderWidth - thumbW * 0.5f;
+                float thumbY = sPos.y - thumbH - 30.0f;
+                
+                if (thumbX < sPos.x) thumbX = sPos.x;
+                if (thumbX + thumbW > sPos.x + sliderWidth) thumbX = sPos.x + sliderWidth - thumbW;
+                
+                int tm = (int)previewTime / 60, ts = (int)previewTime % 60;
+                char timeBuf[24];
+                snprintf(timeBuf, sizeof(timeBuf), "%d:%02d", tm, ts);
+                ImVec2 textSize = ImGui::CalcTextSize(timeBuf);
+                float textX = thumbX + (thumbW - textSize.x) * 0.5f;
+                float textY = thumbY - textSize.y - 4.0f;
+                
+                fgDl->AddRectFilled(ImVec2(textX - 4, textY - 2), 
+                                    ImVec2(textX + textSize.x + 4, textY + textSize.y + 2),
+                                    IM_COL32(0, 0, 0, 200), 4.0f);
+                fgDl->AddText(ImVec2(textX, textY), IM_COL32(255, 255, 255, 255), timeBuf);
+                
+                fgDl->AddRectFilled(ImVec2(thumbX - 2, thumbY - 2), 
+                                    ImVec2(thumbX + thumbW + 2, thumbY + thumbH + 2),
+                                    IM_COL32(30, 30, 30, 255), 4.0f);
+                fgDl->AddImage(_thumbnailTexture->GetImGuiTextureID(),
+                               ImVec2(thumbX, thumbY), ImVec2(thumbX + thumbW, thumbY + thumbH));
+            }
+        } else {
+            _showThumbnail = false;
+            _lastThumbnailTime = -1.0;
+        }
+        
+        ImGui::SetCursorPos(ImVec2(sliderStart - 4, sliderY - 10));
+        ImGui::InvisibleButton("##seek", ImVec2(sliderWidth + 8, 24));
+        
+        bool clicked = ImGui::IsItemClicked();
+        bool active = ImGui::IsItemActive();
+        
+        if (_hasVideo && (clicked || active)) {
+            float mx = ImGui::GetMousePos().x - sPos.x;
+            _seekBarValue = mx / sliderWidth;
+            if (_seekBarValue < 0) _seekBarValue = 0;
+            if (_seekBarValue > 1) _seekBarValue = 1;
+            _isSeeking = true;
+        }
+        
+        if (_hasVideo && _isSeeking && !active) {
+            SeekTo(_seekBarValue * duration);
+            _isSeeking = false;
+            _lastThumbnailTime = -1.0;
+        }
+    }
+    
+    if (_hasVideo) {
+        int dm = (int)duration / 60, ds = (int)duration % 60;
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%d:%02d", dm, ds);
+        ImGui::SetCursorPos(ImVec2(sliderEnd + timeGap, centerY - ImGui::GetTextLineHeight() * 0.5f));
+        ImGui::TextColored(ImVec4(1, 1, 1, 0.5f), "%s", buf);
+    }
+    
+    const char* vIcon = _volume <= 0 ? ICON_FA_VOLUME_XMARK : 
+                        _volume < 0.5f ? ICON_FA_VOLUME_LOW : ICON_FA_VOLUME_HIGH;
+    ImVec2 vIconPos = ImVec2(p.x + volIconX, p.y + centerY - ImGui::GetTextLineHeight() * 0.5f);
+    bool vIconHov = ImGui::IsMouseHoveringRect(vIconPos, ImVec2(vIconPos.x + volIconW, vIconPos.y + ImGui::GetTextLineHeight()));
+    ImGui::SetCursorPos(ImVec2(volIconX, centerY - ImGui::GetTextLineHeight() * 0.5f));
+    ImGui::TextColored(vIconHov ? ImVec4(1, 1, 1, 1.0f) : ImVec4(1, 1, 1, 0.6f), "%s", vIcon);
+    
+    float volH = 3.0f;
+    float volY = centerY - volH * 0.5f;
+    ImVec2 vPos = ImVec2(p.x + volSliderX, p.y + volY);
+    
+    dl->AddRectFilled(vPos, ImVec2(vPos.x + volWidth, vPos.y + volH), 
+                      IM_COL32(255, 255, 255, 40), volH * 0.5f);
+    dl->AddRectFilled(vPos, ImVec2(vPos.x + volWidth * _volume, vPos.y + volH), 
+                      IM_COL32(255, 255, 255, 200), volH * 0.5f);
+    
+    bool vHov = ImGui::IsMouseHoveringRect(
+        ImVec2(vPos.x - 4, vPos.y - 8), ImVec2(vPos.x + volWidth + 4, vPos.y + volH + 8));
+    if (vHov) {
+        dl->AddCircleFilled(ImVec2(vPos.x + volWidth * _volume, vPos.y + volH * 0.5f), 
+                            4.0f, IM_COL32(255, 255, 255, 255));
+    }
+    
+    ImGui::SetCursorPos(ImVec2(volSliderX - 4, volY - 8));
+    ImGui::InvisibleButton("##vol", ImVec2(volWidth + 8, 20));
+    if (ImGui::IsItemActive()) {
+        float mx = ImGui::GetMousePos().x - vPos.x;
+        _volume = mx / volWidth;
+        if (_volume < 0) _volume = 0;
+        if (_volume > 1) _volume = 1;
     }
     
     ImGui::End();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
 }
 
 void MediaPlayer::DrawTimeline() {
-    if (!_hasVideo) return;
-    
-    double duration = _decoder->GetDuration();
-    double currentTime = _isPlaying 
-        ? ElapsedTime() - _videoStartTime + _pausedAtTime 
-        : _pausedAtTime;
-    
-    if (currentTime > duration) {
-        currentTime = duration;
-        _isPlaying = false;
-    }
-    
-    if (!_isSeeking) {
-        _seekBarValue = (float)(currentTime / duration);
-    }
-    
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::SliderFloat("##timeline", &_seekBarValue, 0.0f, 1.0f, "")) {
-        _isSeeking = true;
-    }
-    
-    if (_isSeeking && !ImGui::IsItemActive()) {
-        double newTime = _seekBarValue * duration;
-        SeekTo(newTime);
-        _isSeeking = false;
-    }
 }
 
 void MediaPlayer::OpenFile() {
@@ -323,15 +492,17 @@ void MediaPlayer::OpenFile() {
     
     if (filepath.has_value()) {
         if (_decoder->Open(filepath.value())) {
+            _thumbnailDecoder->Open(filepath.value());
+            
             _currentFilePath = filepath.value();
             _hasVideo = true;
             _isPlaying = false;
             _pausedAtTime = 0.0;
             _seekBarValue = 0.0f;
+            _lastThumbnailTime = -1.0;
+            _showThumbnail = false;
             
-            // Decode first frame
             if (_decoder->DecodeNextFrame(_currentFrame)) {
-                // Create texture from first frame
                 tvk::TextureSpec spec;
                 spec.width = _currentFrame.width;
                 spec.height = _currentFrame.height;
@@ -374,7 +545,7 @@ void MediaPlayer::TogglePlayPause() {
 void MediaPlayer::UpdateVideo() {
     if (!_decoder || !_hasVideo) return;
     
-    double currentPlaybackTime = ElapsedTime() - _videoStartTime + _pausedAtTime;
+    double currentPlaybackTime = ElapsedTime() - _videoStartTime;
     double frameDuration = 1.0 / _decoder->GetFPS();
     
     // Check if we need to decode the next frame

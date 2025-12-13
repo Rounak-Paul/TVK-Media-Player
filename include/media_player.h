@@ -42,8 +42,15 @@ private:
 
     // Video decoding
     std::unique_ptr<VideoDecoder> _decoder;
+    std::unique_ptr<VideoDecoder> _thumbnailDecoder;
     VideoFrame _currentFrame;
     tvk::Ref<tvk::Texture> _videoTexture;
+    
+    // Thumbnail preview
+    VideoFrame _thumbnailFrame;
+    tvk::Ref<tvk::Texture> _thumbnailTexture;
+    double _lastThumbnailTime;
+    bool _showThumbnail;
     
     // Playback state
     bool _isPlaying;

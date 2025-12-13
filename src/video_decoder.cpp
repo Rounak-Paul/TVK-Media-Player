@@ -223,18 +223,96 @@ bool VideoDecoder::Seek(double timeSeconds) {
         return false;
     }
 
-    // Convert time to stream time base
     int64_t timestamp = (int64_t)(timeSeconds / av_q2d(_videoStream->time_base));
 
-    // Seek to the timestamp
     if (av_seek_frame(_formatContext, _videoStreamIndex, timestamp, AVSEEK_FLAG_BACKWARD) < 0) {
         TVK_LOG_ERROR("Failed to seek to {:.2f} seconds", timeSeconds);
         return false;
     }
 
-    // Flush codec buffers
     avcodec_flush_buffers(_codecContext);
     _currentTime = timeSeconds;
+
+    return true;
+}
+
+bool VideoDecoder::GetThumbnailAt(double timeSeconds, VideoFrame& outFrame, int maxWidth, int maxHeight) {
+    if (!_formatContext || !_videoStream || !_codecContext) {
+        return false;
+    }
+
+    int64_t timestamp = (int64_t)(timeSeconds / av_q2d(_videoStream->time_base));
+    if (av_seek_frame(_formatContext, _videoStreamIndex, timestamp, AVSEEK_FLAG_BACKWARD) < 0) {
+        return false;
+    }
+    avcodec_flush_buffers(_codecContext);
+
+    AVFrame* tempFrame = av_frame_alloc();
+    AVPacket* tempPacket = av_packet_alloc();
+    if (!tempFrame || !tempPacket) {
+        if (tempFrame) av_frame_free(&tempFrame);
+        if (tempPacket) av_packet_free(&tempPacket);
+        return false;
+    }
+
+    bool gotFrame = false;
+    int attempts = 0;
+    while (attempts < 50 && !gotFrame) {
+        int ret = av_read_frame(_formatContext, tempPacket);
+        if (ret < 0) break;
+
+        if (tempPacket->stream_index == _videoStreamIndex) {
+            ret = avcodec_send_packet(_codecContext, tempPacket);
+            if (ret >= 0) {
+                ret = avcodec_receive_frame(_codecContext, tempFrame);
+                if (ret >= 0) {
+                    gotFrame = true;
+                }
+            }
+        }
+        av_packet_unref(tempPacket);
+        attempts++;
+    }
+
+    if (!gotFrame) {
+        av_frame_free(&tempFrame);
+        av_packet_free(&tempPacket);
+        return false;
+    }
+
+    float aspect = (float)_width / (float)_height;
+    int thumbW = maxWidth;
+    int thumbH = (int)(maxWidth / aspect);
+    if (thumbH > maxHeight) {
+        thumbH = maxHeight;
+        thumbW = (int)(maxHeight * aspect);
+    }
+
+    SwsContext* thumbSws = sws_getContext(
+        _width, _height, _codecContext->pix_fmt,
+        thumbW, thumbH, AV_PIX_FMT_RGBA,
+        SWS_BILINEAR, nullptr, nullptr, nullptr
+    );
+
+    if (!thumbSws) {
+        av_frame_free(&tempFrame);
+        av_packet_free(&tempPacket);
+        return false;
+    }
+
+    outFrame.width = thumbW;
+    outFrame.height = thumbH;
+    outFrame.data.resize(thumbW * thumbH * 4);
+    outFrame.timestamp = timeSeconds;
+
+    uint8_t* dest[4] = { outFrame.data.data(), nullptr, nullptr, nullptr };
+    int destLinesize[4] = { thumbW * 4, 0, 0, 0 };
+
+    sws_scale(thumbSws, tempFrame->data, tempFrame->linesize, 0, _height, dest, destLinesize);
+
+    sws_freeContext(thumbSws);
+    av_frame_free(&tempFrame);
+    av_packet_free(&tempPacket);
 
     return true;
 }

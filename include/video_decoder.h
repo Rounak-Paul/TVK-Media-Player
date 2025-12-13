@@ -67,6 +67,16 @@ public:
     bool Seek(double timeSeconds);
 
     /**
+     * @brief Get a frame at a specific timestamp without affecting playback position
+     * @param timeSeconds Time in seconds
+     * @param outFrame Output frame data (scaled to thumbnail size)
+     * @param maxWidth Maximum thumbnail width
+     * @param maxHeight Maximum thumbnail height
+     * @return true if successful, false otherwise
+     */
+    bool GetThumbnailAt(double timeSeconds, VideoFrame& outFrame, int maxWidth, int maxHeight);
+
+    /**
      * @brief Get the total duration of the video
      * @return Duration in seconds
      */
