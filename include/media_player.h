@@ -40,6 +40,8 @@ private:
     void DrawColorAdjustmentsWindow();
     void DrawFiltersWindow();
     void DrawPostProcessWindow();
+    void DrawEffectsWindow();
+    void DrawAudioWindow();
     
     void OpenFile();
     void TogglePlayPause();
@@ -60,6 +62,8 @@ private:
     bool _showColorWindow;
     bool _showFiltersWindow;
     bool _showPostProcessWindow;
+    bool _showEffectsWindow;
+    bool _showAudioWindow;
     
     // Thumbnail preview
     VideoFrame _thumbnailFrame;

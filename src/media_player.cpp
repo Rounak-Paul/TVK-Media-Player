@@ -42,6 +42,8 @@ MediaPlayer::MediaPlayer()
     , _showColorWindow(false)
     , _showFiltersWindow(false)
     , _showPostProcessWindow(false)
+    , _showEffectsWindow(false)
+    , _showAudioWindow(false)
 {
 }
 
@@ -94,6 +96,12 @@ void MediaPlayer::OnUI() {
     }
     if (_showPostProcessWindow) {
         DrawPostProcessWindow();
+    }
+    if (_showEffectsWindow) {
+        DrawEffectsWindow();
+    }
+    if (_showAudioWindow) {
+        DrawAudioWindow();
     }
 }
 
@@ -160,11 +168,13 @@ void MediaPlayer::DrawMenuBar() {
             ImGui::EndMenu();
         }
         
-        
+        if (ImGui::BeginMenu("Audio")) {
+            ImGui::MenuItem("Tracks...", nullptr, &_showAudioWindow);
+            ImGui::EndMenu();
+        }
+
         if (ImGui::BeginMenu("Video")) {
-            ImGui::MenuItem("Color Adjustments", nullptr, &_showColorWindow);
-            ImGui::MenuItem("Filters", nullptr, &_showFiltersWindow);
-            ImGui::MenuItem("Post Processing", nullptr, &_showPostProcessWindow);
+            ImGui::MenuItem("Effects", nullptr, &_showEffectsWindow);
             ImGui::Separator();
             if (ImGui::MenuItem("Reset All Effects")) {
                 _videoEffects->ResetAll();
@@ -634,10 +644,6 @@ void MediaPlayer::SeekTo(double timeSeconds) {
     if (!_decoder || !_hasVideo) return;
     
     if (_decoder->Seek(timeSeconds)) {
-        if (_audioDecoder->HasAudio()) {
-            _audioDecoder->Seek(timeSeconds);
-        }
-        
         if (_decoder->DecodeNextFrame(_currentFrame)) {
             if (_videoTexture) {
                 _videoTexture->SetData(
@@ -648,13 +654,19 @@ void MediaPlayer::SeekTo(double timeSeconds) {
             }
         }
         
-        _pausedAtTime = _currentFrame.timestamp;
+        double actual_time = _currentFrame.timestamp;
         
-        if (_isPlaying) {
-            _videoStartTime = ElapsedTime() - _currentFrame.timestamp;
+        if (_audioDecoder->HasAudio()) {
+            _audioDecoder->Seek(actual_time);
         }
         
-        TVK_LOG_INFO("Seeked to {}s", timeSeconds);
+        _pausedAtTime = actual_time;
+        
+        if (_isPlaying) {
+            _videoStartTime = ElapsedTime() - actual_time;
+        }
+        
+        TVK_LOG_INFO("Seeked to {}s", actual_time);
     }
 }
 
@@ -1014,6 +1026,121 @@ void MediaPlayer::DrawPostProcessWindow() {
             pp.Reset();
         }
     }
+    ImGui::End();
+}
+
+void MediaPlayer::DrawEffectsWindow() {
+    ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Effects", &_showEffectsWindow)) {
+        ImGui::End();
+        return;
+    }
+
+    if (ImGui::BeginTabBar("EffectsTabs", ImGuiTabBarFlags_Reorderable)) {
+        if (ImGui::BeginTabItem("Color")) {
+            ColorAdjustments& adj = _videoEffects->GetColorAdjustments();
+            ImGui::Text("Basic");
+            ImGui::Separator();
+            ImGui::SliderFloat("Brightness", &adj.brightness, -1.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Contrast", &adj.contrast, 0.0f, 3.0f, "%.2f");
+            ImGui::SliderFloat("Gamma", &adj.gamma, 0.1f, 3.0f, "%.2f");
+            ImGui::SliderFloat("Exposure", &adj.exposure, -3.0f, 3.0f, "%.2f");
+            ImGui::Spacing();
+            ImGui::Text("Color");
+            ImGui::Separator();
+            ImGui::SliderFloat("Hue Shift", &adj.hue, -0.5f, 0.5f, "%.2f");
+            ImGui::SliderFloat("Saturation", &adj.saturation, 0.0f, 3.0f, "%.2f");
+            ImGui::SliderFloat("Temperature", &adj.temperature, -1.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Tint", &adj.tint, -1.0f, 1.0f, "%.2f");
+            ImGui::Spacing();
+            ImGui::Text("Tone");
+            ImGui::Separator();
+            ImGui::SliderFloat("Shadows", &adj.shadows, -1.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Highlights", &adj.highlights, -1.0f, 1.0f, "%.2f");
+            ImGui::Spacing();
+            if (ImGui::Button("Reset##Color", ImVec2(-1, 0))) adj.Reset();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Filters")) {
+            FilterSettings& flt = _videoEffects->GetFilterSettings();
+            const char* filterNames[] = { "None","Grayscale","Sepia","Invert","Posterize","Solarize","Threshold","Sharpen","Edge Detect" };
+            int currentFilter = static_cast<int>(flt.type);
+            if (ImGui::Combo("Filter", &currentFilter, filterNames, IM_ARRAYSIZE(filterNames))) flt.type = static_cast<FilterType>(currentFilter);
+            ImGui::Spacing();
+            if (flt.type == FilterType::Grayscale || flt.type == FilterType::Sepia || flt.type == FilterType::Invert) ImGui::SliderFloat("Strength", &flt.strength, 0.0f, 1.0f, "%.2f");
+            if (flt.type == FilterType::Posterize) ImGui::SliderInt("Levels", &flt.levels, 2, 16);
+            if (flt.type == FilterType::Solarize || flt.type == FilterType::Threshold) ImGui::SliderFloat("Threshold", &flt.threshold, 0.0f, 1.0f, "%.2f");
+            ImGui::Spacing();
+            if (ImGui::Button("Reset##Filter", ImVec2(-1, 0))) flt.Reset();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Post Process")) {
+            PostProcessSettings& pp = _videoEffects->GetPostProcess();
+            ImGui::Text("Bloom"); ImGui::Separator();
+            ImGui::SliderFloat("Bloom Intensity", &pp.bloom, 0.0f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Bloom Threshold", &pp.bloomThreshold, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Bloom Spread", &pp.bloomRadius, 1.0f, 6.0f, "%.0f");
+            ImGui::Spacing(); ImGui::Text("Effects"); ImGui::Separator();
+            ImGui::SliderFloat("Chromatic Aberration", &pp.chromaticAberration, 0.0f, 1.0f, "%.2f");
+            ImGui::Spacing(); ImGui::Text("Vignette"); ImGui::Separator();
+            ImGui::SliderFloat("Vignette", &pp.vignette, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Vignette Size", &pp.vignetteSize, 0.0f, 1.0f, "%.2f");
+            ImGui::Spacing(); ImGui::Text("Film"); ImGui::Separator();
+            ImGui::SliderFloat("Film Grain", &pp.filmGrain, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Scanlines", &pp.scanlines, 0.0f, 1.0f, "%.2f");
+            ImGui::Spacing(); ImGui::Text("Vintage"); ImGui::Separator();
+            ImGui::Checkbox("Enable Vintage", &pp.vintageEnabled);
+            if (pp.vintageEnabled) ImGui::SliderFloat("Vintage Strength", &pp.vintageStrength, 0.0f, 1.0f, "%.2f");
+            ImGui::Spacing(); if (ImGui::Button("Reset##PostProcess", ImVec2(-1, 0))) pp.Reset();
+            ImGui::EndTabItem();
+        }
+
+        /* Audio tab moved to main menu -> DrawAudioWindow() */
+
+        ImGui::EndTabBar();
+    }
+
+    ImGui::End();
+}
+
+void MediaPlayer::DrawAudioWindow() {
+    ImGui::SetNextWindowSize(ImVec2(380, 200), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Audio", &_showAudioWindow)) { ImGui::End(); return; }
+
+    ImGui::Text("Audio Tracks");
+    ImGui::Separator();
+    if (!_audioDecoder || !_audioDecoder->HasAudio()) {
+        ImGui::TextUnformatted("No audio available");
+    } else {
+        auto names = _audioDecoder->GetAvailableAudioStreamNames();
+        auto indices = _audioDecoder->GetAvailableAudioStreamIndices();
+        int selected_stream = _audioDecoder->GetSelectedAudioStreamIndex();
+        int current_idx = 0;
+        for (size_t i = 0; i < indices.size(); ++i) {
+            if (indices[i] == selected_stream) { current_idx = static_cast<int>(i); break; }
+        }
+
+        std::vector<const char*> items;
+        items.reserve(names.size());
+        for (auto &s : names) items.push_back(s.c_str());
+
+        if (ImGui::Combo("Track", &current_idx, items.data(), static_cast<int>(items.size()))) {
+            int stream_index = indices[current_idx];
+            double video_time = _decoder ? _decoder->GetCurrentTime() : 0.0;
+            if (_audioDecoder->SelectAudioStream(stream_index, video_time)) {
+                TVK_LOG_INFO("Switched to audio stream {}", stream_index);
+            } else {
+                TVK_LOG_ERROR("Failed to switch audio stream {}", stream_index);
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::SliderFloat("Volume", &_volume, 0.0f, 1.0f, "%.2f");
+        if (_audioDecoder->HasAudio()) _audioDecoder->SetVolume(_volume);
+    }
+
     ImGui::End();
 }
 

@@ -48,6 +48,10 @@ public:
     int GetChannels() const { return _channels; }
     bool IsPlaying() const { return _isPlaying; }
     bool HasAudio() const { return _hasAudio; }
+    std::vector<int> GetAvailableAudioStreamIndices() const;
+    std::vector<std::string> GetAvailableAudioStreamNames() const;
+    int GetSelectedAudioStreamIndex() const;
+    bool SelectAudioStream(int stream_index, double sync_time);
 
 private:
     static constexpr int NUM_BUFFERS = 4;
@@ -67,6 +71,8 @@ private:
     AVPacket* _packet;
 
     int _audioStreamIndex;
+    std::vector<int> _availableAudioStreamIndices;
+    std::vector<std::string> _availableAudioStreamNames;
     int _sampleRate;
     int _channels;
     double _duration;
