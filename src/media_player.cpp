@@ -491,6 +491,13 @@ void MediaPlayer::OpenFile() {
     auto filepath = tvk::FileDialog::OpenFile({{"Video Files", "mp4,avi,mkv,mov,wmv,flv,webm"}});
     
     if (filepath.has_value()) {
+        if (_videoTexture) {
+            _videoTexture.reset();
+        }
+        if (_thumbnailTexture) {
+            _thumbnailTexture.reset();
+        }
+        
         if (_decoder->Open(filepath.value())) {
             _thumbnailDecoder->Open(filepath.value());
             
@@ -507,6 +514,7 @@ void MediaPlayer::OpenFile() {
                 spec.width = _currentFrame.width;
                 spec.height = _currentFrame.height;
                 spec.format = tvk::TextureFormat::RGBA8;
+                spec.generateMipmaps = false;
                 
                 _videoTexture = tvk::Texture::Create(
                     GetRenderer(),
