@@ -43,7 +43,6 @@ MediaPlayer::MediaPlayer()
     , _showFiltersWindow(false)
     , _showPostProcessWindow(false)
     , _showEffectsWindow(false)
-    , _showAudioWindow(false)
 {
 }
 
@@ -100,9 +99,7 @@ void MediaPlayer::OnUI() {
     if (_showEffectsWindow) {
         DrawEffectsWindow();
     }
-    if (_showAudioWindow) {
-        DrawAudioWindow();
-    }
+    
 }
 
 void MediaPlayer::OnStop() {
@@ -169,7 +166,29 @@ void MediaPlayer::DrawMenuBar() {
         }
         
         if (ImGui::BeginMenu("Audio")) {
-            ImGui::MenuItem("Tracks...", nullptr, &_showAudioWindow);
+            if (ImGui::BeginMenu("Tracks")) {
+                if (_audioDecoder && _audioDecoder->HasAudio()) {
+                    auto names = _audioDecoder->GetAvailableAudioStreamNames();
+                    auto indices = _audioDecoder->GetAvailableAudioStreamIndices();
+                    int selected_stream = _audioDecoder->GetSelectedAudioStreamIndex();
+
+                    for (size_t i = 0; i < names.size(); ++i) {
+                        bool selected = (indices[i] == selected_stream);
+                        if (ImGui::MenuItem(names[i].c_str(), nullptr, selected)) {
+                            int stream_index = indices[i];
+                            double video_time = _decoder ? _decoder->GetCurrentTime() : 0.0;
+                            if (_audioDecoder->SelectAudioStream(stream_index, video_time)) {
+                                TVK_LOG_INFO("Switched to audio stream {}", stream_index);
+                            } else {
+                                TVK_LOG_ERROR("Failed to switch audio stream {}", stream_index);
+                            }
+                        }
+                    }
+                } else {
+                    ImGui::MenuItem("No audio tracks", nullptr, false, false);
+                }
+                ImGui::EndMenu();
+            }
             ImGui::EndMenu();
         }
 
@@ -189,8 +208,20 @@ void MediaPlayer::DrawMenuBar() {
             ImGui::EndMenu();
         }
 
+        // Centered branding in the menu bar
+        {
+            const char* brand = "TVK Media Player";
+            ImVec2 text_size = ImGui::CalcTextSize(brand);
+            float win_w = ImGui::GetWindowWidth();
+            float center_x = (win_w - text_size.x) * 0.5f;
+            float cur_x = ImGui::GetCursorPosX();
+            if (center_x > cur_x) ImGui::SetCursorPosX(center_x);
+            ImGui::TextUnformatted(brand);
+            ImGui::SameLine(0, 0);
+        }
+
         DrawWindowControls();
-        
+
         ImGui::EndMainMenuBar();
     }
     
@@ -1105,43 +1136,6 @@ void MediaPlayer::DrawEffectsWindow() {
     ImGui::End();
 }
 
-void MediaPlayer::DrawAudioWindow() {
-    ImGui::SetNextWindowSize(ImVec2(380, 200), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Audio", &_showAudioWindow)) { ImGui::End(); return; }
-
-    ImGui::Text("Audio Tracks");
-    ImGui::Separator();
-    if (!_audioDecoder || !_audioDecoder->HasAudio()) {
-        ImGui::TextUnformatted("No audio available");
-    } else {
-        auto names = _audioDecoder->GetAvailableAudioStreamNames();
-        auto indices = _audioDecoder->GetAvailableAudioStreamIndices();
-        int selected_stream = _audioDecoder->GetSelectedAudioStreamIndex();
-        int current_idx = 0;
-        for (size_t i = 0; i < indices.size(); ++i) {
-            if (indices[i] == selected_stream) { current_idx = static_cast<int>(i); break; }
-        }
-
-        std::vector<const char*> items;
-        items.reserve(names.size());
-        for (auto &s : names) items.push_back(s.c_str());
-
-        if (ImGui::Combo("Track", &current_idx, items.data(), static_cast<int>(items.size()))) {
-            int stream_index = indices[current_idx];
-            double video_time = _decoder ? _decoder->GetCurrentTime() : 0.0;
-            if (_audioDecoder->SelectAudioStream(stream_index, video_time)) {
-                TVK_LOG_INFO("Switched to audio stream {}", stream_index);
-            } else {
-                TVK_LOG_ERROR("Failed to switch audio stream {}", stream_index);
-            }
-        }
-
-        ImGui::Spacing();
-        ImGui::SliderFloat("Volume", &_volume, 0.0f, 1.0f, "%.2f");
-        if (_audioDecoder->HasAudio()) _audioDecoder->SetVolume(_volume);
-    }
-
-    ImGui::End();
-}
+/* Audio UI removed; audio tracks are available under the main Audio->Tracks menu */
 
 } // namespace tvk_media
